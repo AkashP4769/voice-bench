@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import routes_health, routes_runs, routes_ui
+from app.api import routes_health, routes_runs, routes_stream, routes_ui
 from app.errors import AudioError, ProviderError, ProviderUnavailable
 from app.ui.render import STATIC_DIR
 
@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
 
     app.include_router(routes_health.router)
     app.include_router(routes_runs.router)
+    app.include_router(routes_stream.router)
     app.include_router(routes_ui.router)
 
     STATIC_DIR.mkdir(parents=True, exist_ok=True)

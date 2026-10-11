@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.environment import collect as collect_environment
+from app.scoring import metrics
+from app.scoring.normalize import DEFAULT_POLICY
 from app.storage.db import connect, init_schema
+
+SAMPLE_RATE = 16000
 
 
 def _now() -> str:
@@ -64,9 +69,9 @@ class Repository:
                     INSERT INTO runs (id, created_at, audio_sha256, audio_name,
                                       audio_path, audio_duration_ms,
                                       audio_sample_rate, audio_channels,
-                                      providers, options, reference_text,
+                                      source, providers, options, reference_text,
                                       environment, caveats, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -77,6 +82,7 @@ class Repository:
                         audio.get("duration_ms"),
                         audio.get("sample_rate"),
                         audio.get("channels"),
+                        run.get("source", "file"),
                         json.dumps(run.get("providers", [])),
                         json.dumps(run.get("options", {})),
                         run.get("reference_text"),
@@ -120,6 +126,79 @@ class Repository:
                     )
         return run_id
 
+    def save_realtime_run(self, run: dict[str, Any]) -> str:
+        """Persist a live session.
+
+        Transcript text only: ``audio_sha256`` and ``audio_path`` are left null
+        and ``source`` marks the run as ``realtime``, so the record is honest
+        about having no audio to re-score. A reference transcript may still be
+        supplied, in which case the saved transcripts are scored against it.
+        """
+        run_id = run.get("id") or uuid.uuid4().hex[:12]
+        created_at = run.get("created_at") or _now()
+        duration_ms = run.get("duration_ms")
+        reference = run.get("reference_text")
+        policy = run.get("score_policy", DEFAULT_POLICY)
+
+        with self._lock:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO runs (id, created_at, audio_sha256, audio_name,
+                                      audio_path, audio_duration_ms,
+                                      audio_sample_rate, audio_channels,
+                                      source, providers, options, reference_text,
+                                      environment, caveats, notes)
+                    VALUES (?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        created_at,
+                        duration_ms,
+                        SAMPLE_RATE,
+                        "realtime",
+                        json.dumps(run.get("providers", [])),
+                        json.dumps(run.get("options", {})),
+                        reference,
+                        json.dumps(run.get("environment") or collect_environment()),
+                        json.dumps(run.get("caveats", [])),
+                        run.get("notes"),
+                    ),
+                )
+                for result in run.get("results", []):
+                    score_payload = None
+                    text = result.get("text") or ""
+                    if reference and text and not result.get("error"):
+                        score_payload = metrics.score(
+                            reference, text, policy
+                        ).as_dict()
+                    self._connection.execute(
+                        """
+                        INSERT INTO results (run_id, provider, model, model_version,
+                                             transport, text, language, latency_ms,
+                                             time_to_first_token_ms, real_time_factor,
+                                             audio_duration_ms, words, windowing,
+                                             truncated, error, warnings, raw, score,
+                                             stream_metrics)
+                        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL,
+                                NULL, ?, '[]', '{}', ?, ?)
+                        """,
+                        (
+                            run_id,
+                            result.get("provider"),
+                            result.get("model"),
+                            result.get("model_version"),
+                            result.get("transport") or "stream",
+                            text,
+                            duration_ms,
+                            json.dumps(result.get("words") or []),
+                            result.get("error"),
+                            json.dumps(score_payload),
+                            json.dumps(result.get("metrics") or {}),
+                        ),
+                    )
+        return run_id
+
     # -- reads -------------------------------------------------------------
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -144,17 +223,25 @@ class Repository:
             result_rows = self._connection.execute(
                 "SELECT * FROM results WHERE run_id = ? ORDER BY id", (run_id,)
             ).fetchall()
-        return {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "audio": {
+        # A live session has no audio to identify, so this is None rather than a
+        # fabricated hash or an empty path.
+        audio = None
+        if row["audio_sha256"] or row["audio_path"]:
+            audio = {
                 "path": row["audio_path"],
                 "name": row["audio_name"],
                 "sha256": row["audio_sha256"],
                 "duration_ms": row["audio_duration_ms"],
                 "sample_rate": row["audio_sample_rate"],
                 "channels": row["audio_channels"],
-            },
+            }
+
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "source": (row["source"] if "source" in row.keys() else "file") or "file",
+            "audio": audio,
+            "duration_ms": row["audio_duration_ms"],
             "providers": _loads(row["providers"], []),
             "options": _loads(row["options"], {}),
             "reference_text": row["reference_text"],
@@ -175,9 +262,11 @@ class Repository:
     # -- shaping -----------------------------------------------------------
 
     def _summarize(self, row: sqlite3.Row) -> dict[str, Any]:
+        source = row["source"] if "source" in row.keys() else "file"
         summary = {
             "id": row["id"],
             "created_at": row["created_at"],
+            "source": source or "file",
             "audio_name": row["audio_name"],
             "audio_sha256": row["audio_sha256"],
             "audio_duration_ms": row["audio_duration_ms"],
@@ -191,6 +280,7 @@ class Repository:
         return summary
 
     def _expand(self, row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
         return {
             "provider": row["provider"],
             "model": row["model"],
@@ -209,4 +299,9 @@ class Repository:
             "warnings": _loads(row["warnings"], []),
             "raw_response": _loads(row["raw"], {}),
             "score": _loads(row["score"], None),
+            "metrics": (
+                _loads(row["stream_metrics"], None)
+                if "stream_metrics" in keys
+                else None
+            ),
         }

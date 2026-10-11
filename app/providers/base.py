@@ -20,7 +20,8 @@ from app.domain.models import (
     WindowingStrategy,
 )
 from app.domain.provider import ProviderCapabilities
-from app.errors import ProviderError
+from app.errors import ProviderError, StreamingUnsupported
+from app.streaming.session import StreamOptions, StreamingSession
 from app.transport.in_process import InProcessTransport
 from app.transport.openai_http import OpenAiHttpTransport
 
@@ -80,6 +81,17 @@ class BaseProvider:
     ) -> TranscriptionResult:
         """Run the engine in this process. Implemented by each adapter."""
         raise NotImplementedError
+
+    def open_stream(self, options: StreamOptions) -> StreamingSession:
+        """Open a live session. Adapters that can stream override this.
+
+        The default refuses rather than degrading silently, so a caller learns
+        that a model cannot stream instead of getting an empty transcript.
+        """
+        raise StreamingUnsupported(
+            f"{self.name} does not support realtime transcription. "
+            f"Declared capability: streaming={self.capabilities.streaming}."
+        )
 
     def describe(self) -> dict:
         """Runtime facts for the reproducibility record."""

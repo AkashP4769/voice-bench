@@ -7,7 +7,10 @@
     {% for run in runs %}
     <tr>
       <td>{{ run.created_at }}</td>
-      <td>{{ run.audio_name or "—" }}</td>
+      <td>
+        {{ run.audio_name or "live session" }}
+        {% if run.source == "realtime" %}<span class="chip">realtime</span>{% endif %}
+      </td>
       <td>{{ run.audio_duration_ms | ms }}</td>
       <td>{{ run.providers | join(", ") }}</td>
       <td>{{ run.result_count }}</td>

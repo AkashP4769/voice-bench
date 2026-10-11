@@ -26,3 +26,11 @@ class ProviderUnavailable(ProviderError):
 
 class ProviderTimeout(ProviderError):
     """A provider exceeded its configured time limit."""
+
+
+class StreamingUnsupported(ProviderError):
+    """A provider cannot serve a live session."""
+
+
+class ProviderBusy(ProviderError):
+    """A provider is already occupied, usually by a live session."""

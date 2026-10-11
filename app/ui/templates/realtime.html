@@ -1,0 +1,135 @@
+{% set active_tab = 'realtime' %}
+{% extends "base.html" %}
+{% block title %}Realtime · Voice Bench{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2>Realtime transcription</h2>
+  <p class="muted">
+    Speak and watch each model transcribe as you go. Both engines segment the audio
+    themselves, so no chunking happens here; audio is simply forwarded as it arrives.
+  </p>
+
+  <div class="grid">
+    <label>Language
+      <select id="rt-language">
+        {% for value, label in languages %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <small>Providers that cannot select a language report an error instead of ignoring this.</small>
+    </label>
+
+    <label>Update cadence
+      <select id="rt-cadence">
+        {% for cadence in cadences %}
+        <option value="{{ cadence }}" {% if cadence == default_cadence %}selected{% endif %}>
+          {{ cadence }} s{{ " (recommended)" if cadence == default_cadence else "" }}
+        </option>
+        {% endfor %}
+      </select>
+      <small>
+        How much audio an engine gets per pass. Whistle measured ~1.07&times; realtime at
+        1 s and ~0.63&times; at 2 s on this machine's CPU, so 2 s is what keeps up.
+        1 s gives snappier updates but will drift behind.
+      </small>
+    </label>
+  </div>
+
+  <fieldset>
+    <legend>Models</legend>
+    <div class="checks" id="rt-providers">
+      {% for provider in providers %}
+      <label class="check">
+        <input type="checkbox" name="rt-provider" value="{{ provider.name }}"
+               data-language-selection="{{ provider.language_selection }}"
+               data-languages="{{ (provider.languages or []) | join(',') }}"
+               data-stream-words="{{ provider.stream_word_timestamps }}"
+               {% if loop.first %}checked{% endif %}>
+        <span>{{ provider.display_name }}
+          <small class="mono">{{ provider.model }}</small>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    {% if not providers %}
+    <p class="alert-inline">No provider on this machine can transcribe in realtime.</p>
+    {% endif %}
+  </fieldset>
+
+  <div class="grid">
+    <label>Keywords (hotwords)
+      <input type="text" id="rt-keywords" placeholder="Ada, Quillon, Neutrino">
+    </label>
+    <label class="check" style="align-self:end">
+      <input type="checkbox" id="rt-word-timestamps">
+      <span>Word timestamps <small>(Whistle only, live)</small></span>
+    </label>
+  </div>
+
+  {% if phonon_note %}
+  <p class="muted"><small>{{ phonon_note }}</small></p>
+  {% endif %}
+
+  <div class="source">
+    <div class="source-actions">
+      <button class="btn primary large" type="button" id="rt-record" disabled>
+        <span class="pulse" aria-hidden="true"></span>
+        <span id="rt-record-label">Start listening</span>
+      </button>
+      <span class="or">or</span>
+      <button class="btn" type="button" id="rt-stop" disabled>Stop</button>
+      <button class="btn ghost" type="button" id="rt-clear" disabled>Clear</button>
+    </div>
+    <p class="source-status" id="rt-status" aria-live="polite">Ready.</p>
+    <small id="rt-hint">Audio is captured at 16 kHz mono and never leaves this machine.</small>
+  </div>
+</section>
+
+<section class="card" id="rt-panels-card" hidden>
+  <h2>Live</h2>
+  <div id="rt-panels" class="panels"></div>
+</section>
+
+<section class="card" id="rt-final-card" hidden>
+  <h2>Transcripts</h2>
+  <div id="rt-final"></div>
+
+  <label>Reference transcript <small>(optional; scores the saved run, cannot be re-scored later)</small>
+    <textarea id="rt-reference" rows="2"
+              placeholder="Paste the script you read aloud, if you want a word error rate."></textarea>
+  </label>
+  <label>Notes
+    <input type="text" id="rt-notes" placeholder="optional label for this session">
+  </label>
+
+  <div class="actions">
+    <button class="btn" type="button" id="rt-save">Save to history</button>
+    <button class="btn ghost" type="button" id="rt-copy">Copy all</button>
+    <span class="muted" id="rt-save-status"></span>
+  </div>
+</section>
+
+<template id="rt-panel-template">
+  <article class="panel" data-state="starting">
+    <header>
+      <strong class="panel-name"></strong>
+      <span class="chip panel-state">starting</span>
+      <span class="muted panel-impl"></span>
+    </header>
+    <p class="panel-text"><span class="committed"></span><span class="pending"></span></p>
+    <p class="panel-note muted" hidden></p>
+    <dl class="facts panel-facts">
+      <div><dt>Audio in</dt><dd class="f-audio">—</dd></div>
+      <div><dt>Last pass</dt><dd class="f-pass">—</dd></div>
+      <div><dt>Cadence</dt><dd class="f-cadence">—</dd></div>
+      <div><dt>Segments</dt><dd class="f-segments">—</dd></div>
+      <div><dt>Keeping up</dt><dd class="f-lag">—</dd></div>
+    </dl>
+  </article>
+</template>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ asset('realtime.js') }}" defer data-version="{{ asset_version }}"></script>
+{% endblock %}

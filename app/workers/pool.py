@@ -36,6 +36,8 @@ from app.domain.models import (
     TranscriptionResult,
 )
 from app.errors import ProviderError, ProviderUnavailable, ProviderTimeout
+from app.streaming.events import StreamEvent, StreamResult
+from app.streaming.session import StreamOptions
 from app.workers import protocol
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,9 @@ class ProviderWorker:
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._started_once = False
+        # True while a live session owns this provider. Read when building the
+        # "busy" message, so a caller learns *why* it is refused.
+        self._stream_active = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -267,62 +272,242 @@ class ProviderWorker:
 
     # -- work --------------------------------------------------------------
 
+    def _ensure_running(self) -> None:
+        """Start the worker if it is not up. Caller holds the lock."""
+        if self._process is not None and self._process.poll() is None:
+            return
+        if self._started_once:
+            self.status.restarts += 1
+        self._terminate()
+        self.status = WorkerStatus(provider=self.name, restarts=self.status.restarts)
+        self._spawn()
+        self._started_once = True
+        self._handshake()
+
+    def _busy_message(self) -> str:
+        if self._stream_active:
+            return (
+                f"{self.name} has a live session open. Batch transcription is "
+                "unavailable until that session ends, because the engine keeps "
+                "stream state per process."
+            )
+        return f"{self.name} is busy with another request. Try again shortly."
+
+    def _write(self, message: dict) -> None:
+        if self._writer is None:
+            raise ProviderError(f"worker for {self.name} is not running")
+        try:
+            self._writer.write(json.dumps(message) + "\n")
+            self._writer.flush()
+        except (OSError, ValueError) as exc:
+            self._terminate()
+            raise ProviderError(
+                f"worker for {self.name} closed while sending work: {exc}"
+            ) from exc
+
+    def _await_reply(self, expected_id: str, timeout_s: float, what: str) -> dict:
+        message = self._await(timeout_s, what)
+        kind = message.get("type")
+        if kind == "eof":
+            self._terminate()
+            raise ProviderError(
+                f"worker for {self.name} exited during {what}. "
+                f"Last output from {self.log_path.name}:\n{self._log_tail()}"
+            )
+        if message.get("id") != expected_id:
+            self._terminate()
+            raise ProviderError(
+                f"worker for {self.name} sent {kind!r} for a different request"
+            )
+        return message
+
+    @staticmethod
+    def _raise_from(message: dict, provider: str) -> None:
+        error_type = message.get("error_type", "")
+        text = message.get("error", "provider failed")
+        if error_type == ProviderTimeout.__name__:
+            raise ProviderTimeout(text)
+        if error_type in {ProviderUnavailable.__name__, ProviderError.__name__}:
+            raise ProviderError(text)
+        raise ProviderError(f"{provider} failed: {text}")
+
     def transcribe(
         self,
         audio: PreparedAudio,
         options: TranscriptionOptions,
     ) -> TranscriptionResult:
-        with self._lock:
-            if self._process is None or self._process.poll() is not None:
-                if self._started_once:
-                    self.status.restarts += 1
-                self._terminate()
-                self.status = WorkerStatus(
-                    provider=self.name, restarts=self.status.restarts
-                )
-                self._spawn()
-                self._started_once = True
-                self._handshake()
+        # Non-blocking: a batch run behind a live session would otherwise hang
+        # for as long as the user keeps talking, with no way to tell why.
+        if not self._lock.acquire(blocking=False):
+            raise ProviderError(self._busy_message())
+        try:
+            self._ensure_running()
 
             job_id = uuid.uuid4().hex
             request = protocol.JobRequest(job_id=job_id, audio=audio, options=options)
-            if self._writer is None:
-                raise ProviderError(f"worker for {self.name} is not running")
-            try:
-                self._writer.write(json.dumps(request.to_wire()) + "\n")
-                self._writer.flush()
-            except (OSError, ValueError) as exc:
-                self._terminate()
-                raise ProviderError(
-                    f"worker for {self.name} closed while sending work: {exc}"
-                ) from exc
+            self._write(request.to_wire())
 
-            message = self._await(self.job_timeout_s, "transcription")
-            kind = message.get("type")
-            if kind == "eof":
+            message = self._await_reply(job_id, self.job_timeout_s, "transcription")
+            if message.get("type") != protocol.RESULT:
                 self._terminate()
                 raise ProviderError(
-                    f"worker for {self.name} exited during transcription. "
-                    f"Last output from {self.log_path.name}:\n{self._log_tail()}"
-                )
-            if kind != protocol.RESULT or message.get("id") != job_id:
-                self._terminate()
-                raise ProviderError(
-                    f"worker for {self.name} sent an unexpected message: {kind!r}"
+                    f"worker for {self.name} sent an unexpected message: "
+                    f"{message.get('type')!r}"
                 )
             if not message.get("ok"):
-                error_type = message.get("error_type", "")
-                text = message.get("error", "provider failed")
-                self.status.last_error = text
-                if error_type == ProviderTimeout.__name__:
-                    raise ProviderTimeout(text)
-                if error_type in {
-                    ProviderUnavailable.__name__,
-                    ProviderError.__name__,
-                }:
-                    raise ProviderError(text)
-                raise ProviderError(f"{self.name} failed: {text}")
+                self.status.last_error = message.get("error", "provider failed")
+                self._raise_from(message, self.name)
             return TranscriptionResult.from_dict(message["result"])
+        finally:
+            self._lock.release()
+
+    # -- streaming ---------------------------------------------------------
+
+    def open_stream(
+        self,
+        options: StreamOptions,
+        timeout_s: float | None = None,
+    ) -> "ProviderStream":
+        """Open a live session, holding this provider's lock for its lifetime.
+
+        Fails fast rather than queueing: a live session is a user-facing
+        activity, and a request waiting behind one could wait for minutes.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise ProviderError(self._busy_message())
+        try:
+            self._ensure_running()
+            session_id = uuid.uuid4().hex
+            self._write(
+                {
+                    "type": protocol.STREAM_START,
+                    "id": session_id,
+                    "options": options.as_wire(),
+                }
+            )
+            message = self._await_reply(
+                session_id, timeout_s or self.startup_timeout_s, "session start"
+            )
+            if message.get("type") == protocol.STREAM_ERROR:
+                self.status.last_error = message.get("error", "stream failed")
+                self._raise_from(message, self.name)
+            if message.get("type") != protocol.STREAM_STARTED:
+                self._terminate()
+                raise ProviderError(
+                    f"worker for {self.name} sent {message.get('type')!r} instead "
+                    "of stream_started"
+                )
+            self._stream_active = True
+            return ProviderStream(
+                worker=self,
+                session_id=session_id,
+                implementation=message.get("implementation"),
+            )
+        except Exception:
+            self._lock.release()
+            raise
+
+    def stream_feed(self, session_id: str, samples) -> list[StreamEvent]:
+        """Caller holds the lock, via the open ProviderStream."""
+        self._write(
+            {
+                "type": protocol.STREAM_CHUNK,
+                "id": session_id,
+                "audio": protocol.encode_audio_block(samples),
+            }
+        )
+        message = self._await_reply(session_id, self.job_timeout_s, "stream chunk")
+        kind = message.get("type")
+        if kind == protocol.STREAM_ERROR:
+            self.status.last_error = message.get("error", "stream failed")
+            self._raise_from(message, self.name)
+        if kind != protocol.STREAM_EVENTS:
+            self._terminate()
+            raise ProviderError(
+                f"worker for {self.name} sent {kind!r} instead of stream_events"
+            )
+        return [StreamEvent.from_wire(event) for event in message.get("events") or []]
+
+    def stream_close(self, session_id: str) -> StreamResult:
+        """Caller holds the lock, via the open ProviderStream."""
+        self._write({"type": protocol.STREAM_STOP, "id": session_id})
+        message = self._await_reply(session_id, self.job_timeout_s, "session stop")
+        kind = message.get("type")
+        if kind == protocol.STREAM_ERROR:
+            self.status.last_error = message.get("error", "stream failed")
+            self._raise_from(message, self.name)
+        if kind != protocol.STREAM_DONE:
+            self._terminate()
+            raise ProviderError(
+                f"worker for {self.name} sent {kind!r} instead of stream_done"
+            )
+        return StreamResult(**message["result"])
+
+    def release_stream(self) -> None:
+        """Called once, when a ProviderStream finishes or is abandoned."""
+        self._stream_active = False
+        try:
+            if self._lock.locked():
+                self._lock.release()
+        except RuntimeError:
+            # Not held by this thread; nothing to release.
+            logger.debug("stream lock for %s was already released", self.name)
+
+
+class ProviderStream:
+    """A live session handle that owns its provider's lock.
+
+    Finishing is idempotent and happens even on failure, because a socket that
+    drops mid-session must not leave the provider permanently busy.
+    """
+
+    def __init__(
+        self,
+        worker: ProviderWorker,
+        session_id: str,
+        implementation: str | None = None,
+    ) -> None:
+        self._worker = worker
+        self.session_id = session_id
+        self.implementation = implementation
+        self.provider = worker.name
+        self._finished = False
+
+    def feed(self, samples) -> list[StreamEvent]:
+        if self._finished:
+            raise ProviderError(f"session for {self.provider} is already closed")
+        try:
+            return self._worker.stream_feed(self.session_id, samples)
+        except Exception:
+            # A failed feed leaves the engine in an unknown state, so the
+            # session is abandoned rather than left claimable.
+            self.abort()
+            raise
+
+    def close(self) -> StreamResult:
+        if self._finished:
+            raise ProviderError(f"session for {self.provider} is already closed")
+        try:
+            result = self._worker.stream_close(self.session_id)
+            if not result.implementation:
+                result.implementation = self.implementation
+            return result
+        finally:
+            self._release()
+
+    def abort(self) -> None:
+        """Drop the session without finalizing it."""
+        self._release()
+
+    def _release(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._worker.release_stream()
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
 
 
 class WorkerPool:
@@ -350,6 +535,10 @@ class WorkerPool:
         options: TranscriptionOptions,
     ) -> TranscriptionResult:
         return self.worker(name).transcribe(audio, options)
+
+    def open_stream(self, name: str, options: StreamOptions) -> ProviderStream:
+        """Open a live session for one provider, or fail fast if it is busy."""
+        return self.worker(name).open_stream(options)
 
     def warm(self, names: list[str]) -> dict[str, str]:
         """Load the named providers now, reporting per-provider failures.

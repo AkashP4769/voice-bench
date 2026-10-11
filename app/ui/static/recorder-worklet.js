@@ -9,12 +9,19 @@
 
 "use strict";
 
-const BATCH_SAMPLES = 4096;
+const DEFAULT_BATCH_SAMPLES = 4096;
 
 class VoiceBenchRecorder extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    this._buffer = new Float32Array(BATCH_SAMPLES);
+    // Realtime wants smaller frames for lower latency; the batch recorder keeps
+    // its larger default.
+    const requested =
+      options && options.processorOptions && options.processorOptions.batchSamples;
+    this._batch = Number.isFinite(requested) && requested > 0
+      ? Math.floor(requested)
+      : DEFAULT_BATCH_SAMPLES;
+    this._buffer = new Float32Array(this._batch);
     this._offset = 0;
     this._peak = 0;
     this._closed = false;
@@ -45,7 +52,7 @@ class VoiceBenchRecorder extends AudioWorkletProcessor {
         this._peak = magnitude;
       }
 
-      if (this._offset === BATCH_SAMPLES) {
+      if (this._offset === this._batch) {
         this._flush();
       }
     }
@@ -60,7 +67,7 @@ class VoiceBenchRecorder extends AudioWorkletProcessor {
     // the batch buffer itself would detach it while process() still uses it.
     const samples = this._buffer.slice(0, this._offset);
     this.port.postMessage({ samples, peak: this._peak }, [samples.buffer]);
-    this._buffer = new Float32Array(BATCH_SAMPLES);
+    this._buffer = new Float32Array(this._batch);
     this._offset = 0;
     this._peak = 0;
   }

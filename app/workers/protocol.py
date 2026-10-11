@@ -18,6 +18,17 @@ JOB = "job"
 RESULT = "result"
 SHUTDOWN = "shutdown"
 
+# Streaming frames. A session is driven by three client messages and answered by
+# one reply each, which keeps the one-response-per-request invariant the pool
+# relies on for id correlation and timeouts.
+STREAM_START = "stream_start"
+STREAM_STARTED = "stream_started"
+STREAM_CHUNK = "stream_chunk"
+STREAM_EVENTS = "stream_events"
+STREAM_STOP = "stream_stop"
+STREAM_DONE = "stream_done"
+STREAM_ERROR = "stream_error"
+
 
 def encode_audio(audio: PreparedAudio) -> dict[str, Any]:
     return {
@@ -55,6 +66,35 @@ def decode_options(payload: dict[str, Any]) -> TranscriptionOptions:
         keywords=tuple(payload.get("keywords") or ()),
         hotword_lambda=payload.get("hotword_lambda"),
     )
+
+
+# -- streaming audio -------------------------------------------------------
+
+
+def encode_audio_block(samples) -> str:
+    """Encode 16 kHz mono float32 samples for the worker channel.
+
+    Base64 inside the JSON line costs about a third extra on a hop that is
+    loopback, and it preserves the single framing mechanism this protocol already
+    uses. A raw length-prefixed frame would be the optimisation if this ever has
+    to cross a real network.
+    """
+    import base64
+
+    import numpy as np
+
+    array = np.ascontiguousarray(samples, dtype="<f4")
+    return base64.b64encode(array.tobytes()).decode("ascii")
+
+
+def decode_audio_block(encoded: str):
+    """Decode a block produced by :func:`encode_audio_block`."""
+    import base64
+
+    import numpy as np
+
+    raw = base64.b64decode(encoded)
+    return np.frombuffer(raw, dtype="<f4").astype(np.float32, copy=False)
 
 
 @dataclass(frozen=True)

@@ -13,6 +13,7 @@ from app.api.deps import get_config, get_repository, get_worker_pool
 from app.api.routes_runs import build_request, store_upload
 from app.config import Settings
 from app.errors import VoiceBenchError
+from app.providers.registry import HUMAN_NAMES, describe_configuration
 from app.scoring.normalize import DEFAULT_POLICY, NormalizationPolicy
 from app.services.benchmark import execute_run, summarize_score
 from app.storage.repository import Repository
@@ -39,8 +40,6 @@ MODEL_NOTES = {
 
 
 def _provider_cards(settings: Settings, pool) -> list[dict]:
-    from app.providers.registry import HUMAN_NAMES, describe_configuration
-
     workers = {entry["provider"]: entry for entry in pool.status()}
     cards = []
     for name, config in settings.providers.items():
@@ -84,6 +83,57 @@ def index(
             ],
             "defaults": settings.defaults,
             "runs": repository.list_runs(15),
+        },
+    )
+
+
+@router.get("/realtime", response_class=HTMLResponse)
+def realtime_page(
+    request: Request,
+    settings: Settings = Depends(get_config),
+    pool=Depends(get_worker_pool),
+) -> HTMLResponse:
+    from app.providers.phonon import live_session_available
+
+    streamable = []
+    for name, config in settings.providers.items():
+        capabilities = describe_configuration(config)["capabilities"]
+        if not capabilities["streaming"]:
+            continue
+        streamable.append(
+            {
+                "name": name,
+                "display_name": HUMAN_NAMES.get(config.type, config.type),
+                "model": config.model,
+                "languages": capabilities["languages"],
+                "language_selection": capabilities["supports_language_selection"],
+                "hotwords": capabilities["hotwords"],
+                # Word timings are available live from Whistle only; Phonon's
+                # live session reports text without them.
+                "stream_word_timestamps": config.type == "whistle",
+            }
+        )
+
+    phonon_note = None
+    if any(entry["name"].startswith("phonon") for entry in streamable):
+        phonon_note = (
+            "Fermion's own live session is in use."
+            if live_session_available()
+            else "Fermion's live session is unavailable in this build, so Phonon "
+            "uses this harness's rolling segmenter as a fallback."
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "realtime.html",
+        {
+            "providers": streamable,
+            "languages": LANGUAGE_CHOICES,
+            "phonon_note": phonon_note,
+            # Whistle measured at ~1.07x realtime on 1 s chunks and ~0.63x on 2 s,
+            # so the default cadence is the one that keeps up.
+            "cadences": [1.0, 2.0, 3.0],
+            "default_cadence": 2.0,
         },
     )
 

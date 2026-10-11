@@ -8,9 +8,12 @@ UI, the scoring code or the storage layer changes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from app.domain.models import PreparedAudio, TranscriptionOptions, TranscriptionResult
+
+if TYPE_CHECKING:  # avoids a cycle: streaming imports the domain types above
+    from app.streaming.session import StreamOptions, StreamingSession
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,14 @@ class SpeechProvider(Protocol):
         audio: PreparedAudio,
         options: TranscriptionOptions,
     ) -> TranscriptionResult: ...
+
+    def open_stream(self, options: "StreamOptions") -> "StreamingSession":
+        """Open a live session.
+
+        Providers that cannot stream raise ``StreamingUnsupported`` rather than
+        returning a degraded session, so the caller can report it plainly.
+        """
+        ...
 
     def describe(self) -> dict:
         """Runtime facts for the reproducibility record, such as CPU tier."""

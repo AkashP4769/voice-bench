@@ -24,6 +24,8 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
+
 from app.domain.models import (
     PreparedAudio,
     TranscriptionOptions,
@@ -35,6 +37,9 @@ from app.domain.models import (
 from app.domain.provider import ProviderCapabilities
 from app.errors import ProviderError, ProviderUnavailable
 from app.providers.base import BaseProvider
+from app.streaming.events import StreamEvent, StreamMetrics, StreamResult
+from app.streaming.segmenter import RollingSegmenter
+from app.streaming.session import StreamOptions
 
 logger = logging.getLogger(__name__)
 
@@ -214,4 +219,168 @@ class PhononProvider(BaseProvider):
                 "decode_seconds": decode_seconds,
                 "audio_seconds": audio_seconds,
             },
+        )
+
+    # -- streaming ---------------------------------------------------------
+
+    def open_stream(self, options: StreamOptions) -> "PhononStreamSession":
+        if self._speech is None:
+            self.warmup()
+        return PhononStreamSession(self._speech, options)
+
+
+def _load_live_session():
+    """Fermion's live session, or ``None`` if this build does not expose it.
+
+    It lives in a private module (``fermion._speech.live``), so it is treated as
+    optional: if it moves or its signature changes, the session falls back to our
+    own rolling segmenter and realtime keeps working.
+    """
+    try:
+        from fermion._speech.live import LiveSession  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    return LiveSession
+
+
+def live_session_available() -> bool:
+    """Whether Phonon can stream using Fermion's own segmentation."""
+    return _load_live_session() is not None
+
+
+class PhononStreamSession:
+    """Live Phonon transcription.
+
+    Prefers Fermion's ``LiveSession`` — the same segmentation ``fermion listen``
+    and Fermion's own WebSocket endpoint use — because it does the work this
+    harness would otherwise have to do: RMS voice gating, partials at a
+    0.35 s/0.50 s cadence, and closing a segment on 0.70 s of trailing silence.
+    It drives the public ``transcribe_array``, so it needs no special engine
+    support and no separate server process.
+
+    Word timestamps are not available on this path; the UI gates that option off
+    for realtime rather than pretending otherwise.
+    """
+
+    SAMPLE_RATE = 16000
+
+    def __init__(self, speech, options: StreamOptions) -> None:
+        self._speech = speech
+        self._options = options
+        self.metrics = StreamMetrics()
+        self._finals: list[str] = []
+        self._partial = ""
+        self._events: list[StreamEvent] = []
+        self._error: str | None = None
+        self._started = time.perf_counter()
+        # LiveSession feeds in 50 ms blocks.
+        self._block = int(0.05 * self.SAMPLE_RATE)
+
+        self._live = self._try_live_session(speech)
+        if self._live is None:
+            self.implementation = "rolling"
+            self._segmenter = RollingSegmenter(self._decode, metrics=self.metrics)
+        else:
+            self.implementation = "live_session"
+            self._segmenter = None
+
+    @staticmethod
+    def _try_live_session(speech):
+        live_cls = _load_live_session()
+        if live_cls is None:
+            return None
+        try:
+            return live_cls(speech, on_partial=None, on_final=None)
+        except Exception as exc:
+            # Signature drift in a private module lands here, not as a crash.
+            logger.warning("fermion live session unavailable, rolling instead: %s", exc)
+            return None
+
+    def _decode(self, audio) -> str:
+        text, _, _ = self._speech.transcribe_array(audio)
+        return text or ""
+
+    # -- callbacks from LiveSession ---------------------------------------
+
+    def _on_partial(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        self._partial = text
+        self._events.append(
+            StreamEvent.partial(self._best_text(), received_s=self.metrics.audio_s)
+        )
+
+    def _on_final(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        self._finals.append(text)
+        self._partial = ""
+        self.metrics.segments += 1
+        self._events.append(
+            StreamEvent.final(
+                text,
+                segment=len(self._finals),
+                received_s=self.metrics.audio_s,
+            )
+        )
+
+    def _best_text(self) -> str:
+        parts = [*self._finals]
+        if self._partial:
+            parts.append(self._partial)
+        return " ".join(part for part in parts if part).strip()
+
+    # -- session contract --------------------------------------------------
+
+    def feed(self, samples) -> list[StreamEvent]:
+        array = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
+        if array.size == 0:
+            return []
+
+        self.metrics.chunks += 1
+        self.metrics.audio_s += array.size / self.SAMPLE_RATE
+        started = time.perf_counter()
+        try:
+            if self._segmenter is not None:
+                events = self._segmenter.feed(array)
+            else:
+                # LiveSession has no return value: it reports through callbacks.
+                for start in range(0, array.size, self._block):
+                    self._live.feed(array[start : start + self._block])
+                events = list(self._events)
+                self._events.clear()
+        finally:
+            self.metrics.observe_pass((time.perf_counter() - started) * 1000.0)
+
+        if self.metrics.first_partial_ms is None and events:
+            self.metrics.first_partial_ms = (
+                time.perf_counter() - self._started
+            ) * 1000.0
+        self.metrics.text_chars = len(self._best_text())
+        return events
+
+    def stop(self) -> StreamResult:
+        if self._segmenter is not None:
+            text, _ = self._segmenter.finish()
+            return StreamResult(
+                provider="",
+                text=text,
+                metrics=self.metrics,
+                error=self._error,
+                implementation="rolling",
+            )
+
+        try:
+            text = self._live.finish()
+        except Exception as exc:
+            self._error = f"phonon failed while finishing the stream: {exc}"
+            text = self._best_text()
+        return StreamResult(
+            provider="",
+            text=(text or "").strip() or self._best_text(),
+            metrics=self.metrics,
+            error=self._error,
+            implementation="live_session",
         )

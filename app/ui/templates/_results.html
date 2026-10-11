@@ -1,8 +1,13 @@
 <div class="results">
   <h2>Results</h2>
   <p class="muted">
+    {% if run.audio %}
     {{ run.audio.name }} &middot; {{ run.audio.duration_ms | ms }} &middot;
     audio <span class="mono">{{ run.audio.sha256[:12] }}</span> &middot;
+    {% elif run.duration_ms %}
+    live session &middot; {{ run.duration_ms | ms }} &middot;
+    audio not retained &middot;
+    {% endif %}
     run <span class="mono">{{ run.id }}</span>
   </p>
 
@@ -82,6 +87,11 @@
         <div><dt>Substitutions</dt><dd>{{ result.score.substitutions }}</dd></div>
         <div><dt>Insertions</dt><dd>{{ result.score.insertions }}</dd></div>
         <div><dt>Deletions</dt><dd>{{ result.score.deletions }}</dd></div>
+        {% endif %}
+        {% if result.metrics %}
+        <div><dt>Audio in</dt><dd>{{ result.metrics.audio_s }} s</dd></div>
+        <div><dt>Mean pass</dt><dd>{{ result.metrics.mean_pass_ms | ms }}</dd></div>
+        <div><dt>Decode vs realtime</dt><dd>{{ result.metrics.realtime_factor | num(2) }}&times;</dd></div>
         {% endif %}
       </dl>
 
