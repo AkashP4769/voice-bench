@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Voice Bench{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">Voice Bench</a>
+    <span class="sub">Phonon-2 and Whistle, benchmarked on this machine</span>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <p>
+      Local models only. Provider output is normalized before scoring, and the
+      transport, windowing strategy and package versions are recorded with every run.
+    </p>
+  </footer>
+</body>
+</html>

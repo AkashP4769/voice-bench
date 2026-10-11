@@ -1,0 +1,40 @@
+# Provider definitions.
+#
+# The `openai_http` transport speaks the OpenAI-compatible
+# POST /v1/audio/transcriptions contract. That is what makes a future hosted
+# provider a configuration change rather than a code change: point `base_url` at
+# the hosted endpoint and set `api_key_env` to the name of the environment
+# variable holding the key.
+#
+# `api_key_env` holds the NAME of an environment variable, never a secret value.
+
+providers:
+  phonon-2:
+    type: phonon
+    model: phonon-2
+    transport: in_process
+    # Fermion ships an OpenAI-compatible server (`fermion serve phonon-2`).
+    # Start it and switch `transport` to openai_http to exercise the hosted seam.
+    server:
+      base_url: http://127.0.0.1:8000
+      api_key_env: PHONON_API_KEY
+      timeout_s: 300
+
+  whistle:
+    type: whistle
+    model: whistle
+    transport: in_process
+    server:
+      base_url: http://127.0.0.1:8001
+      api_key_env: WHISTLE_API_KEY
+      timeout_s: 300
+
+# Options applied to every run unless overridden per request.
+defaults:
+  word_timestamps: true
+  # Input the harness normalizes everything to before handing it to a provider.
+  target_sample_rate: 16000
+  target_channels: 1
+  # Chunking applied only to providers whose `max_duration_s` is exceeded.
+  window_seconds: 28.0
+  window_overlap_seconds: 1.0

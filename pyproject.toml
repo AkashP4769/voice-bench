@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-bench"
+version = "0.1.0"
+description = "Local speech-to-text benchmark harness for Phonon-2 and Whistle"
+requires-python = ">=3.10"
+
+# Engine packages (cactus-needle, fermion-research) are optional extras so that
+# working on one provider does not require installing the other's runtime.
+dependencies = [
+    "numpy>=1.24",
+    "soundfile>=0.12",
+    "soxr>=0.3",
+    "PyYAML>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+whistle = ["cactus-needle>=3.2"]
+phonon = ["fermion-research>=0.2.11"]
+engines = ["cactus-needle>=3.2", "fermion-research>=0.2.11"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+bench = "app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "integration: loads real models in worker processes and is slow",
+]

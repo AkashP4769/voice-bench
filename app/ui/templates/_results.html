@@ -1,0 +1,116 @@
+<div class="results">
+  <h2>Results</h2>
+  <p class="muted">
+    {{ run.audio.name }} &middot; {{ run.audio.duration_ms | ms }} &middot;
+    audio <span class="mono">{{ run.audio.sha256[:12] }}</span> &middot;
+    run <span class="mono">{{ run.id }}</span>
+  </p>
+
+  {% if run.summary %}
+  <p class="summary">
+    Lowest word error rate: <strong>{{ run.summary.best_wer_provider }}</strong>
+    at {{ run.summary.best_wer | ratio }}
+  </p>
+  {% endif %}
+
+  {% if run.caveats %}
+  <ul class="caveats">
+    {% for caveat in run.caveats %}<li>{{ caveat }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <table class="metrics">
+    <thead>
+      <tr>
+        <th>Provider</th><th>Status</th><th>Transport</th><th>Latency</th>
+        <th>First token</th><th>Real-time factor</th><th>WER</th><th>CER</th>
+        <th>Words</th><th>Lang</th><th>Model</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in run.results %}
+      <tr>
+        <td><strong>{{ result.provider }}</strong></td>
+        <td>
+          {% if result.error %}<span class="bad">failed</span>
+          {% else %}<span class="ok">ok</span>{% endif %}
+        </td>
+        <td>{{ result.transport or "—" }}</td>
+        <td>{{ result.latency_ms | ms }}</td>
+        <td>{{ result.time_to_first_token_ms | ms }}</td>
+        <td>{{ result.real_time_factor | num(3) }}</td>
+        <td>{% if result.score %}{{ result.score.wer | ratio }}{% else %}—{% endif %}</td>
+        <td>{% if result.score %}{{ result.score.cer | ratio }}{% else %}—{% endif %}</td>
+        <td>{{ result.words | length }}</td>
+        <td>{{ result.language or "—" }}</td>
+        <td class="mono">{{ result.model_version or result.model or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% for result in run.results %}
+  <article class="transcript">
+    <h3>
+      {{ result.provider }}
+      {% if result.model and result.model != result.provider %}
+      <small class="mono">{{ result.model }}</small>
+      {% endif %}
+      {% if result.error %}<span class="bad">failed</span>{% endif %}
+    </h3>
+
+    {% if result.error %}
+      <p class="alert-inline">{{ result.error }}</p>
+    {% else %}
+      {% for warning in result.warnings %}
+      <p class="warn">{{ warning }}</p>
+      {% endfor %}
+
+      <p class="text">{{ result.text or "(empty transcript)" }}</p>
+
+      <dl class="facts">
+        <div><dt>Audio</dt><dd>{{ result.audio_duration_ms | ms }}</dd></div>
+        <div><dt>Latency</dt><dd>{{ result.latency_ms | ms }}</dd></div>
+        <div><dt>First token</dt><dd>{{ result.time_to_first_token_ms | ms }}</dd></div>
+        <div><dt>Real-time factor</dt><dd>{{ result.real_time_factor | num(3) }}</dd></div>
+        {% if result.windowing %}
+        <div><dt>Harness windows</dt><dd>{{ result.windowing.window_count }}</dd></div>
+        <div><dt>Engine windows</dt>
+          <dd>{{ result.windowing.engine_window_count if result.windowing.engine_window_count else "—" }}</dd></div>
+        {% endif %}
+        {% if result.score %}
+        <div><dt>Substitutions</dt><dd>{{ result.score.substitutions }}</dd></div>
+        <div><dt>Insertions</dt><dd>{{ result.score.insertions }}</dd></div>
+        <div><dt>Deletions</dt><dd>{{ result.score.deletions }}</dd></div>
+        {% endif %}
+      </dl>
+
+      {% if result.words %}
+      <details>
+        <summary>{{ result.words | length }} words with timestamps</summary>
+        <table class="words">
+          <thead><tr><th>Word</th><th>Start</th><th>End</th><th>Probability</th></tr></thead>
+          <tbody>
+            {% for word in result.words %}
+            <tr>
+              <td>{{ word.text }}</td>
+              <td>{{ word.start_ms | ms }}</td>
+              <td>{{ word.end_ms | ms }}</td>
+              <td>{% if word.probability is not none %}{{ word.probability | num(3) }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+      {% endif %}
+    {% endif %}
+  </article>
+  {% endfor %}
+
+  <p class="muted">
+    Export this run:
+    <a href="/api/runs/{{ run.id }}/export?format=json">JSON</a> ·
+    <a href="/api/runs/{{ run.id }}/export?format=csv">CSV</a> ·
+    <a href="/runs/{{ run.id }}">permalink</a>
+  </p>
+</div>

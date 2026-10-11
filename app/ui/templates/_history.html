@@ -1,0 +1,26 @@
+{% if runs %}
+<table class="history">
+  <thead>
+    <tr><th>When</th><th>Audio</th><th>Length</th><th>Providers</th><th>Results</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    <tr>
+      <td>{{ run.created_at }}</td>
+      <td>{{ run.audio_name or "—" }}</td>
+      <td>{{ run.audio_duration_ms | ms }}</td>
+      <td>{{ run.providers | join(", ") }}</td>
+      <td>{{ run.result_count }}</td>
+      <td class="row-actions">
+        <a href="/runs/{{ run.id }}">view</a>
+        <button hx-post="/ui/runs/{{ run.id }}/delete"
+                hx-target="#history" hx-swap="innerHTML"
+                hx-confirm="Delete this run?">delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No runs yet.</p>
+{% endif %}

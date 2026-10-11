@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Run a comparison</h2>
+  <form hx-post="/ui/runs" hx-target="#results" hx-swap="innerHTML"
+        hx-encoding="multipart/form-data" hx-indicator="#working"
+        hx-on::after-request="htmx.trigger('#history', 'refresh')">
+
+    <div class="grid">
+      <label>Audio file
+        <input type="file" name="file" accept=".wav,.flac,.ogg,.aiff,audio/*">
+        <small>Normalized to 16 kHz mono before either model sees it.</small>
+      </label>
+
+      <label>Language
+        <select name="language">
+          {% for value, label in languages %}
+          <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+        <small>Providers that cannot select a language report an error instead of ignoring this.</small>
+      </label>
+
+      <label>Scoring normalization
+        <select name="normalization">
+          {% for policy in policies %}
+          <option value="{{ policy.value }}"
+                  {% if policy.is_default %}selected{% endif %}>{{ policy.value }}</option>
+          {% endfor %}
+        </select>
+        <small>Applied to both transcripts before word error rate is computed.</small>
+      </label>
+    </div>
+
+    <fieldset>
+      <legend>Providers</legend>
+      <div class="checks">
+        {% for provider in providers %}
+        <label class="check">
+          <input type="checkbox" name="providers" value="{{ provider.name }}"
+                 {% if loop.first %}checked{% endif %}>
+          <span>{{ provider.display_name }}
+            <small class="mono">{{ provider.model }}</small>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <label class="check">
+      <input type="checkbox" name="word_timestamps" value="true" checked>
+      <span>Word timestamps</span>
+    </label>
+
+    <div class="grid">
+      <label>Keywords (hotwords)
+        <input type="text" name="keywords" placeholder="Ada, Quillon, Neutrino">
+        <small>Favours these terms. Phonon-2 accepts up to 25.</small>
+      </label>
+
+      <label>Notes
+        <input type="text" name="notes" placeholder="optional label for this run">
+      </label>
+    </div>
+
+    <label>Reference transcript <small>(optional, required for word error rate)</small>
+      <textarea name="reference_text" rows="3"
+                placeholder="Paste the ground-truth text of this clip."></textarea>
+    </label>
+
+    <div class="actions">
+      <button type="submit">Run benchmark</button>
+      <span id="working" class="htmx-indicator">Running. The first run loads each model, which takes longer than the decode.</span>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Providers</h2>
+  <table class="providers">
+    <thead>
+      <tr>
+        <th>Provider</th><th>Model</th><th>Transport</th><th>Languages</th>
+        <th>Selects language</th><th>Word times</th><th>Hotwords</th>
+        <th>Max audio</th><th>Loaded</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in providers %}
+      <tr>
+        <td>
+          <strong>{{ p.display_name }}</strong>
+          {% if p.note %}<small class="note">{{ p.note }}</small>{% endif %}
+        </td>
+        <td class="mono">{{ p.model }}</td>
+        <td>{{ p.transport }}</td>
+        <td>{{ p.languages }}</td>
+        <td>{{ "yes" if p.language_selection else "no" }}</td>
+        <td>{{ "yes" if p.word_timestamps else "no" }}</td>
+        <td>{{ ("up to " ~ p.max_hotwords) if p.max_hotwords else ("yes" if p.hotwords else "no") }}</td>
+        <td>{{ (p.max_duration_s ~ " s") if p.max_duration_s else "engine segments" }}</td>
+        <td>
+          {% if p.worker and p.worker.running %}
+            <span class="ok">yes</span>
+            <small>{{ p.worker.load_seconds | sec }}</small>
+          {% else %}
+            <span class="muted">not yet</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<div id="results"></div>
+
+<section class="card">
+  <h2>History</h2>
+  <div id="history" hx-get="/history" hx-trigger="load, refresh" hx-swap="innerHTML">
+    <p class="muted">Loading…</p>
+  </div>
+</section>
+{% endblock %}

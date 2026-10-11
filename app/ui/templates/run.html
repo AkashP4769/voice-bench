@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }} · Voice Bench{% endblock %}
+{% block content %}
+<p class="muted">
+  Saved {{ run.created_at }} &middot; run <span class="mono">{{ run.id }}</span>
+  {% if run.notes %} &middot; {{ run.notes }}{% endif %}
+</p>
+{% include "_results.html" %}
+{% endblock %}

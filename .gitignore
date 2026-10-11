@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data: uploaded audio, normalized audio, results, worker logs and the
+# run database. Nothing here is source.
+data/
+
+# Generated speech fixtures (tools/make_fixtures.ps1)
+tests/fixtures/*.wav
+
+# Local environment
+.env
+*.local
