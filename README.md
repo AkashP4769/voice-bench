@@ -46,9 +46,33 @@ bench warmup
 bench serve            # http://127.0.0.1:8080
 ```
 
-Upload a clip, pick the models, optionally paste a reference transcript, and
-compare. The page also lists each provider's declared capabilities, so it is
-clear up front that Phonon-2 is English-only and cannot select a language.
+Upload a clip or record one from the microphone, pick the models, optionally
+paste a reference transcript, and compare. The page also lists each provider's
+declared capabilities, so it is clear up front that Phonon-2 is English-only and
+cannot select a language.
+
+### Recording from the microphone
+
+The **Audio source** row offers two ways in: *Choose audio file*, or the
+microphone button, which records and then attaches the take to the same form, so
+every other setting applies unchanged. While recording you get a live timer,
+an input level meter, and Stop/Discard; the Run button is disabled until the take
+is ready, and a finished recording can be transposed or discarded and re-recorded.
+
+Two implementation notes, both of which matter:
+
+- **Raw PCM, not `MediaRecorder`.** `MediaRecorder` emits webm/opus (or mp4/aac),
+  and the backend decodes audio with libsndfile, which reads wav, flac, ogg and
+  aiff but not webm or mp4. Fermion's server rejects mp3 and m4a outright. So the
+  Web Audio graph captures raw samples in an `AudioWorklet` and encodes a 16 kHz
+  mono 16-bit PCM WAV in the browser — the format both engines natively want.
+- **A secure context is required.** `getUserMedia` is unavailable on plain
+  `http://` except on `localhost`, so the app reports that rather than failing
+  silently. If the page is opened from a LAN address, use the file picker.
+
+Recordings are named `recording-<timestamp>.wav`, saved under `data/audio/uploads`,
+and normalized and hashed like any other upload, so a recorded run is as
+reproducible as a file-based one. Recordings are capped at 5 minutes.
 
 ### Command line
 
@@ -310,3 +334,12 @@ runs on any platform.
 - **Telemetry.** `cactus-needle` sends anonymous usage counts by default. The
   adapter sets `NEEDLE_TELEMETRY=0`, because locally benchmarked audio is the
   user's business.
+- **Microphone audio never leaves the machine**, and it is not sent anywhere
+  until the recording has been attached and you press Run benchmark. The browser
+  asks for permission the first time; Discard releases the microphone
+  immediately (and the tracks are stopped, so the browser's recording indicator
+  clears).
+- **Static assets are versioned** (`/static/app.css?v=<version>`). Without that,
+  a browser will happily serve a cached stylesheet after an update, which makes
+  a CSS change look like it did nothing. Bump `__version__` if you need to force
+  a refresh during development.

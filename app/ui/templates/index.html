@@ -6,12 +6,32 @@
         hx-encoding="multipart/form-data" hx-indicator="#working"
         hx-on::after-request="htmx.trigger('#history', 'refresh')">
 
-    <div class="grid">
-      <label>Audio file
-        <input type="file" name="file" accept=".wav,.flac,.ogg,.aiff,audio/*">
-        <small>Normalized to 16 kHz mono before either model sees it.</small>
-      </label>
+    <div class="source">
+      <span class="field-label">Audio source</span>
+      <div class="source-actions">
+        <input class="visually-hidden" type="file" id="audio-file" name="file"
+               accept=".wav,.flac,.ogg,.aiff,audio/*">
+        <label class="btn" id="audio-file-label" for="audio-file">Choose audio file</label>
+        <span class="or">or</span>
+        <button class="btn icon" type="button" id="record-button"
+                aria-pressed="false" title="Record from microphone">
+          {{ icon('microphone') }}
+          <span class="visually-hidden">Record from microphone</span>
+        </button>
 
+        <div class="recorder" id="recorder" data-phase="recording" hidden>
+          <span class="dot" aria-hidden="true"></span>
+          <span class="mono timer" id="record-timer">0.0 s</span>
+          <span class="level" aria-hidden="true"><span class="level-fill" id="record-level-fill"></span></span>
+          <button class="btn danger" type="button" id="record-stop">Stop</button>
+          <button class="btn ghost" type="button" id="record-clear">Discard</button>
+        </div>
+      </div>
+      <p class="source-status" id="audio-status" aria-live="polite">No audio selected.</p>
+      <small id="record-hint">Normalized to 16 kHz mono before either model sees it.</small>
+    </div>
+
+    <div class="grid">
       <label>Language
         <select name="language">
           {% for value, label in languages %}
@@ -69,7 +89,7 @@
     </label>
 
     <div class="actions">
-      <button type="submit">Run benchmark</button>
+      <button type="submit" id="run-button">Run benchmark</button>
       <span id="working" class="htmx-indicator">Running. The first run loads each model, which takes longer than the decode.</span>
     </div>
   </form>
