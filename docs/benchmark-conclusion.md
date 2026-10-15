@@ -1,6 +1,8 @@
 # Benchmark conclusion: Phonon-2 vs Whistle
 
 Conclusion drawn from the latest **persisted** evaluation result in this repository.
+For a short version of the newer 20-clip English head-to-head, see
+[benchmark-summary.md](./benchmark-summary.md).
 
 ## What was evaluated
 
@@ -116,3 +118,8 @@ That gap is now closed: every automated run is written to
 it, with `latest.json` and `latest.csv` tracking the newest result. Re-running
 that LibriSpeech set will therefore produce a stored result that can be compared
 with this one.
+
+Two such runs now exist (`20261015-221555`, `20261015-221705`), covering the same
+20 LibriSpeech English clips with both models. They are summarised in
+[benchmark-summary.md](./benchmark-summary.md); this document keeps the analysis
+of the earlier multilingual set.
