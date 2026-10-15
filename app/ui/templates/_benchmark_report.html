@@ -1,0 +1,118 @@
+{# One automated benchmark result. Shared by a fresh run and a stored run, so a
+   result looks the same whether it was just measured or read back from disk. #}
+<section class="card">
+  <h2>{{ metadata.benchmark_name }} results</h2>
+  <p class="muted">
+    Scored {{ metadata.clips }} clip{{ "" if metadata.clips == 1 else "s" }}
+    from {{ metadata.sources | join(", ") }} with
+    <span class="mono">{{ metadata.normalization }}</span>.
+    {{ metadata.fetched_clips }} clip{{ "" if metadata.fetched_clips == 1 else "s" }} fetched.
+    {% if metadata.created_at %}&middot; {{ metadata.created_at }}{% endif %}
+    {% if metadata.run_id %}&middot; run <span class="mono">{{ metadata.run_id }}</span>{% endif %}
+  </p>
+
+  {% if metadata.fetch_failures %}
+  <div class="caveats">
+    <strong>Some source requests failed:</strong>
+    <ul>
+      {% for failure in metadata.fetch_failures %}<li>{{ failure }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if metadata.warm_failures %}
+  <div class="alert">
+    <strong>Some models could not be warmed:</strong>
+    <ul>
+      {% for provider, failure in metadata.warm_failures.items() %}
+      <li><span class="mono">{{ provider }}</span>: {{ failure }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <table>
+    <thead>
+      <tr>
+        <th>Model</th><th>Scored</th><th>Skipped</th><th>Failed</th>
+        <th>WER</th><th>CER</th><th>Mean latency</th><th>RTF</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for summary in summaries %}
+      <tr>
+        <td><strong>{{ summary.provider }}</strong></td>
+        <td>{{ summary.clips_scored }}</td>
+        <td>{{ summary.clips_skipped }}</td>
+        <td>{{ summary.clips_failed }}</td>
+        <td>{{ summary.wer | ratio }}</td>
+        <td>{{ summary.cer | ratio }}</td>
+        <td>{{ summary.mean_latency_ms | ms }}</td>
+        <td>{{ summary.mean_real_time_factor | num }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if languages %}
+  <h3>Word error rate by language</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Language</th>
+        {% for summary in summaries %}<th>{{ summary.provider }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for language in languages %}
+      <tr>
+        <td class="mono">{{ language }}</td>
+        {% for summary in summaries %}
+        {% set bucket = (summary.by_language or {}).get(language) %}
+        <td>{{ bucket.wer | ratio if bucket else "—" }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <details>
+    <summary>Clip-level details</summary>
+    <table>
+      <thead>
+        <tr><th>Clip</th><th>Model</th><th>Status</th><th>WER</th><th>Latency</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="mono">{{ row.clip_id }}</td>
+          <td>{{ row.provider }}</td>
+          <td class="{{ 'ok' if row.status == 'ok' else 'warn' }}">{{ row.status }}</td>
+          <td>{{ row.wer | ratio }}</td>
+          <td>{{ row.latency_ms | ms }}</td>
+          <td>{{ row.note or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+
+  <p class="muted">
+    {% if stored %}
+    Stored as <span class="mono">{{ stored.json_path }}</span>
+    plus <span class="mono">latest.json</span> and <span class="mono">latest.csv</span>
+    in the same directory.
+    Export:
+    <a href="/benchmarks/runs/{{ metadata.benchmark }}/{{ metadata.run_id }}/export?format=json">json</a>
+    &middot;
+    <a href="/benchmarks/runs/{{ metadata.benchmark }}/{{ metadata.run_id }}/export?format=csv">csv</a>.
+    {% endif %}
+  </p>
+
+  <p class="muted">
+    Manifest: <span class="mono">{{ metadata.manifest }}</span>.
+    Reuse it with <span class="mono">bench evaluate --manifest "{{ metadata.manifest }}"</span>
+    to repeat this run without downloading the clips again.
+  </p>
+</section>

@@ -1,0 +1,10 @@
+{% set active_tab = 'benchmarks' %}
+{% extends "base.html" %}
+{% block title %}Stored run {{ run_id }} · Voice Bench{% endblock %}
+{% block content %}
+<p class="muted">
+  Saved benchmark run <span class="mono">{{ run_id }}</span> &middot;
+  <a href="/benchmarks">back to benchmarks</a>
+</p>
+{% include "_benchmark_report.html" %}
+{% endblock %}

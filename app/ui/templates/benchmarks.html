@@ -1,0 +1,134 @@
+{% set active_tab = 'benchmarks' %}
+{% extends "base.html" %}
+{% block title %}Automated benchmarks · Voice Bench{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2>Automated benchmark</h2>
+  <p class="muted">
+    Download a small ground-truthed test set, run the selected local models, and
+    compare their word and character error rates. Only the requested clips are
+    downloaded; the full corpus is never installed.
+  </p>
+
+  <form hx-post="/ui/benchmarks" hx-target="#benchmark-results" hx-swap="innerHTML"
+        hx-indicator="#benchmark-working"
+        hx-on::after-request="htmx.trigger('#benchmark-history', 'refresh')">
+    <fieldset>
+      <legend>Benchmark provider</legend>
+      {% for benchmark in benchmark_providers %}
+      <label class="benchmark-provider">
+        <input type="radio" name="benchmark_provider" value="{{ benchmark.key }}"
+               {% if loop.first %}checked{% endif %}>
+        <span>
+          <strong>{{ benchmark.name }}</strong>
+          <small>{{ benchmark.note }}</small>
+        </span>
+      </label>
+      <div class="benchmark-sources" data-benchmark-sources="{{ benchmark.key }}">
+        {% for source in benchmark.sources %}
+        <label class="check">
+          <input type="checkbox" name="source_keys" value="{{ source.key }}"
+                 data-benchmark-key="{{ benchmark.key }}" checked>
+          <span>{{ source.label }} <small class="mono">{{ source.language }}</small></span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      {% if not benchmark_providers %}
+      <p class="alert-inline">No automated benchmark provider is configured.</p>
+      {% endif %}
+    </fieldset>
+
+    <div class="grid">
+      <label>Clips per subset
+        <input type="number" name="per_source" min="1" max="20" value="2">
+        <small>Each subset prefers clips from different speakers.</small>
+      </label>
+
+      <label>Maximum clips to score
+        <input type="number" name="limit" min="0" value="0">
+        <small>0 means score every fetched clip.</small>
+      </label>
+
+      <label>Scoring normalization
+        <select name="normalization">
+          {% for policy in policies %}
+          <option value="{{ policy.value }}"
+                  {% if policy.is_default %}selected{% endif %}>{{ policy.value }}</option>
+          {% endfor %}
+        </select>
+        <small>Applied to both transcripts before WER and CER are computed.</small>
+      </label>
+    </div>
+
+    <fieldset>
+      <legend>Models to compare</legend>
+      <div class="checks">
+        {% for provider in providers %}
+        <label class="check">
+          <input type="checkbox" name="providers" value="{{ provider.name }}"
+                 {% if loop.first %}checked{% endif %}>
+          <span>{{ provider.display_name }}
+            <small class="mono">{{ provider.model }}</small>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit" {% if not benchmark_providers or not providers %}disabled{% endif %}>
+        Run automated benchmark
+      </button>
+      <span id="benchmark-working" class="htmx-indicator">
+        Fetching clips and running models. The first run may load model weights.
+      </span>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>How this works</h2>
+  <ol class="muted">
+    <li>Fetches only the selected LibriSpeech test clips and their references.</li>
+    <li>Normalizes the same audio bytes before sending them to each model.</li>
+    <li>Micro-averages errors across all scored reference words.</li>
+    <li>Writes every run to disk, so a closed tab cannot lose the result.</li>
+  </ol>
+  <p class="muted">
+    New datasets can be added as benchmark providers without changing this page.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Saved runs</h2>
+  <div id="benchmark-history" hx-get="/benchmarks/runs" hx-trigger="load, refresh"
+       hx-swap="innerHTML">
+    <p class="muted">Loading…</p>
+  </div>
+</section>
+
+<div id="benchmark-results"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (() => {
+    const choices = document.querySelectorAll('input[name="benchmark_provider"]');
+    const groups = document.querySelectorAll("[data-benchmark-sources]");
+    function syncSources() {
+      const selected = document.querySelector('input[name="benchmark_provider"]:checked');
+      const selectedKey = selected ? selected.value : "";
+      groups.forEach((group) => {
+        const enabled = group.dataset.benchmarkSources === selectedKey;
+        group.hidden = !enabled;
+        group.querySelectorAll('input[name="source_keys"]').forEach((input) => {
+          input.disabled = !enabled;
+        });
+      });
+    }
+    choices.forEach((choice) => choice.addEventListener("change", syncSources));
+    syncSources();
+  })();
+</script>
+{% endblock %}

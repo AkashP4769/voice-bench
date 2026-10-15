@@ -8,13 +8,23 @@ capability gap is reported as "skipped" rather than as a total failure.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from app.evaluation.store import (
+    LATEST_STEM,
+    RUN_ID_PATTERN,
+    build_benchmark_payload,
+    list_benchmark_runs,
+    load_benchmark_run,
+    save_benchmark_run,
+)
 from app.evaluation.report import (
     ERROR,
     OK,
     UNSUPPORTED,
+    CSV_COLUMNS,
     ClipResult,
     ProviderSummary,
     render_language_table,
@@ -26,8 +36,11 @@ from app.evaluation.report import (
 )
 from app.evaluation.run import _unsupported_reason
 from app.evaluation.sources import (
+    BENCHMARK_PROVIDERS,
+    BENCHMARK_PROVIDERS_BY_KEY,
     CATALOG,
     CATALOG_BY_KEY,
+    BenchmarkProvider,
     DEFAULT_SOURCES,
     Clip,
     Source,
@@ -64,6 +77,15 @@ def test_catalogue_covers_both_english_and_whistles_languages():
 def test_default_set_references_only_known_sources():
     for key in DEFAULT_SOURCES:
         assert key in CATALOG_BY_KEY, key
+
+
+def test_automated_benchmark_providers_reference_known_sources():
+    assert BENCHMARK_PROVIDERS
+    assert BENCHMARK_PROVIDERS_BY_KEY["librispeech"].name == "LibriSpeech"
+    for provider in BENCHMARK_PROVIDERS:
+        assert isinstance(provider, BenchmarkProvider)
+        assert provider.source_keys
+        assert all(key in CATALOG_BY_KEY for key in provider.source_keys)
 
 
 def test_source_keys_are_unique():
@@ -335,3 +357,114 @@ def test_json_is_written_as_readable_utf8():
                                       language="pl", provider="a", reference=clip.reference)])
     encoded = json.dumps(payload, ensure_ascii=False)
     assert "zażółć" in encoded
+
+
+# -- persistence -----------------------------------------------------------
+
+
+def payload_for(clips=1, providers=("a",), metadata=None):
+    rows = [scored(providers[0], "en", 10, 1)]
+    summaries = summarise_all(rows, providers)
+    return build_benchmark_payload(
+        benchmark_key="librispeech",
+        benchmark_name="LibriSpeech",
+        source_keys=["librispeech-clean"],
+        providers=list(providers),
+        normalization="lower_strip_punctuation",
+        summaries=summaries,
+        rows=rows,
+        clips=[object()] * clips,
+        manifest="data/benchmarks/librispeech/manifest.jsonl",
+        fetched_clips=clips,
+        **(metadata or {}),
+    )
+
+
+def test_a_saved_run_is_readable_after_the_fact(tmp_path):
+    stored = save_benchmark_run(tmp_path, payload_for())
+
+    assert stored.run_id
+    assert Path(stored.json_path).exists()
+    assert stored.csv_path and Path(stored.csv_path).exists()
+    # The newest numbers are findable without knowing the run id.
+    assert (tmp_path / f"{LATEST_STEM}.json").exists()
+    assert (tmp_path / f"{LATEST_STEM}.csv").exists()
+
+    loaded = load_benchmark_run(tmp_path, stored.run_id)
+    assert loaded is not None
+    assert loaded["metadata"]["benchmark"] == "librispeech"
+    assert loaded["metadata"]["schema"] == 1
+    assert loaded["summary"][0]["provider"] == "a"
+
+
+def test_the_stored_csv_uses_the_cli_columns(tmp_path):
+    stored = save_benchmark_run(tmp_path, payload_for())
+    header = Path(stored.csv_path).read_text(encoding="utf-8").splitlines()[0]
+    assert header == ",".join(CSV_COLUMNS)
+
+
+def test_runs_sharing_a_second_do_not_overwrite_each_other(tmp_path):
+    """Two runs in the same second is normal when re-running a small set."""
+    first = save_benchmark_run(tmp_path, payload_for())
+    second = save_benchmark_run(tmp_path, payload_for())
+
+    assert first.run_id != second.run_id
+    assert Path(first.json_path).exists()
+    assert Path(second.json_path).exists()
+    assert len(list_benchmark_runs(tmp_path)) == 2
+
+
+def test_listing_is_newest_first_and_respects_the_limit(tmp_path):
+    for _ in range(3):
+        save_benchmark_run(tmp_path, payload_for())
+    runs = list_benchmark_runs(tmp_path, limit=2)
+
+    assert len(runs) == 2
+    assert [run.run_id for run in runs] == sorted(
+        (run.run_id for run in runs), reverse=True
+    )
+
+
+def test_listing_an_absent_directory_is_empty(tmp_path):
+    assert list_benchmark_runs(tmp_path / "nothing-here") == []
+
+
+def test_a_corrupt_run_file_is_skipped_rather_than_raising(tmp_path):
+    good = save_benchmark_run(tmp_path, payload_for())
+    (tmp_path / "runs" / "20200101-000000.json").write_text("{not json", encoding="utf-8")
+
+    runs = list_benchmark_runs(tmp_path)
+    assert [run.run_id for run in runs] == [good.run_id]
+
+
+def test_a_run_id_cannot_escape_its_directory(tmp_path):
+    """The id arrives from a URL and becomes a path segment."""
+    save_benchmark_run(tmp_path, payload_for())
+
+    for hostile in ("../latest", "..", "a/b", "a\\b", ""):
+        assert load_benchmark_run(tmp_path, hostile) is None
+    assert RUN_ID_PATTERN.match("20261015-220700-1")
+
+
+def test_listed_run_reports_its_numbers(tmp_path):
+    save_benchmark_run(tmp_path, payload_for(providers=("a", "b")))
+    stored = list_benchmark_runs(tmp_path)[0]
+
+    assert stored.benchmark_name == "LibriSpeech"
+    assert stored.clips == 1
+    assert stored.wer_of("a") == pytest.approx(0.1)
+    assert stored.wer_of("ghost") is None
+
+
+def test_warm_and_fetch_failures_survive_the_round_trip(tmp_path):
+    payload = payload_for(
+        metadata={
+            "fetch_failures": ["mls-german offset 0: timeout"],
+            "warm_failures": {"b": "engine missing"},
+        }
+    )
+    stored = save_benchmark_run(tmp_path, payload)
+    loaded = load_benchmark_run(tmp_path, stored.run_id)
+
+    assert loaded["metadata"]["fetch_failures"] == ["mls-german offset 0: timeout"]
+    assert loaded["metadata"]["warm_failures"] == {"b": "engine missing"}

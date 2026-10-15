@@ -1,0 +1,33 @@
+{% if runs %}
+<table>
+  <thead>
+    <tr>
+      <th>When</th><th>Benchmark</th><th>Models</th><th>Sources</th>
+      <th>Clips</th><th>WER by model</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    <tr>
+      <td class="mono">{{ run.created_at }}</td>
+      <td>{{ run.benchmark_name }}</td>
+      <td>{{ run.providers | join(", ") }}</td>
+      <td>{{ run.sources | join(", ") }}</td>
+      <td>{{ run.clips }}</td>
+      <td>
+        {% for summary in run.summaries %}
+        <span class="mono">{{ summary.provider }}</span> {{ summary.wer | ratio }}
+        {%- if not loop.last %} &middot; {% endif %}
+        {% endfor %}
+      </td>
+      <td class="row-actions">
+        <a href="/benchmarks/runs/{{ run.benchmark }}/{{ run.run_id }}">view</a>
+        <a href="/benchmarks/runs/{{ run.benchmark }}/{{ run.run_id }}/export?format=csv">csv</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No saved runs yet. Run a benchmark and it will be stored here.</p>
+{% endif %}

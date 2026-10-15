@@ -269,6 +269,36 @@ installed never trips over the other's imports.
 | `bench env` | Machine, package versions, and Phonon's CPU kernel tier |
 | `bench serve` | Web UI and API |
 
+The web UI also has an **Automated benchmarks** page. It currently exposes the
+LibriSpeech provider, with clean and other English test subsets, and lets you
+choose how many clips to fetch and which local models to compare. It writes a
+reusable manifest under `data/benchmarks/librispeech/`, so subsequent runs can
+use the CLI without downloading the audio again:
+
+```bash
+bench evaluate --manifest data/benchmarks/librispeech/manifest.jsonl \
+  --providers whistle,phonon-2
+```
+
+Every automated run is written to disk before the result is rendered, so a closed
+tab cannot lose it:
+
+| Path | Contents |
+| --- | --- |
+| `runs/<run-id>.json` | Metadata, per-model summary and per-clip results for one run |
+| `runs/<run-id>.csv` | The same clips, one row per clip/provider pair |
+| `latest.json`, `latest.csv` | The newest run, without needing to know its id |
+
+The payload is the same JSON shape the CLI writes with `--json-out`, which is why
+a run stored from the page can be read back by anything that understands a CLI
+result. The page lists recent runs, shows any of them again after a restart, and
+exports them as JSON or CSV.
+
+Benchmark datasets are registered independently of model providers in
+`app/evaluation/sources.py`. Adding another dataset means adding a
+`BenchmarkProvider` entry and its source keys; the page and evaluation engine
+do not need a dataset-specific branch.
+
 ## API
 
 | Route | Purpose |
@@ -282,6 +312,10 @@ installed never trips over the other's imports.
 | `GET /api/runs/{id}/export?format=csv\|json` | Machine-readable export |
 | `DELETE /api/runs/{id}` | Delete a run |
 | `GET /` | Web UI |
+| `GET /benchmarks` | Automated ground-truthed benchmark UI |
+| `GET /benchmarks/runs` | Stored benchmark runs, as an HTML fragment |
+| `GET /benchmarks/runs/{dataset}/{run_id}` | View one stored benchmark run |
+| `GET /benchmarks/runs/{dataset}/{run_id}/export?format=json\|csv` | Export a stored run |
 
 ---
 

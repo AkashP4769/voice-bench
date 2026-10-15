@@ -6,12 +6,31 @@ and there is no build step or Node toolchain involved.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from app.api.deps import get_config, get_repository, get_worker_pool
 from app.api.routes_runs import build_request, store_upload
 from app.config import Settings
+from app.evaluation import (
+    BENCHMARK_PROVIDERS,
+    BENCHMARK_PROVIDERS_BY_KEY,
+    CATALOG_BY_KEY,
+    ClipResult,
+    EvaluationOptions,
+    build_benchmark_payload,
+    describe_benchmark_run,
+    evaluate,
+    fetch_set,
+    list_benchmark_runs,
+    load_benchmark_run,
+    save_benchmark_run,
+    summarise_all,
+    to_csv,
+    write_manifest,
+)
 from app.errors import VoiceBenchError
 from app.providers.registry import HUMAN_NAMES, describe_configuration
 from app.scoring.normalize import DEFAULT_POLICY, NormalizationPolicy
@@ -64,6 +83,56 @@ def _provider_cards(settings: Settings, pool) -> list[dict]:
     return cards
 
 
+def _benchmark_cards() -> list[dict]:
+    """Build dataset choices without coupling the page to one corpus."""
+    cards = []
+    for provider in BENCHMARK_PROVIDERS:
+        sources = []
+        for source_key in provider.source_keys:
+            source = CATALOG_BY_KEY[source_key]
+            sources.append(
+                {
+                    "key": source.key,
+                    "label": f"{source.config.title()} test subset",
+                    "language": source.language,
+                    "note": source.note,
+                }
+            )
+        cards.append(
+            {
+                "key": provider.key,
+                "name": provider.name,
+                "note": provider.note,
+                "sources": sources,
+            }
+        )
+    return cards
+
+
+def _benchmark_context(payload: dict, stored=None) -> dict:
+    """One view model for a run, whether it was just measured or read back."""
+    metadata = payload.get("metadata") or {}
+    summaries = payload.get("summary") or []
+    languages = sorted(
+        {
+            language
+            for summary in summaries
+            for language in (summary.get("by_language") or {})
+        }
+    )
+    return {
+        "metadata": metadata,
+        "summaries": summaries,
+        "rows": payload.get("clips") or [],
+        "languages": languages,
+        "stored": stored,
+    }
+
+
+def _benchmark_output_dir(settings: Settings, benchmark_key: str) -> Path:
+    return settings.data_dir / "benchmarks" / benchmark_key
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(
     request: Request,
@@ -83,6 +152,26 @@ def index(
             ],
             "defaults": settings.defaults,
             "runs": repository.list_runs(15),
+        },
+    )
+
+
+@router.get("/benchmarks", response_class=HTMLResponse)
+def benchmarks_page(
+    request: Request,
+    settings: Settings = Depends(get_config),
+    pool=Depends(get_worker_pool),
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "benchmarks.html",
+        {
+            "providers": _provider_cards(settings, pool),
+            "benchmark_providers": _benchmark_cards(),
+            "policies": [
+                {"value": item.value, "is_default": item is DEFAULT_POLICY}
+                for item in NormalizationPolicy
+            ],
         },
     )
 
@@ -134,6 +223,188 @@ def realtime_page(
             # so the default cadence is the one that keeps up.
             "cadences": [1.0, 2.0, 3.0],
             "default_cadence": 2.0,
+        },
+    )
+
+
+@router.post("/ui/benchmarks", response_class=HTMLResponse)
+def ui_benchmark(
+    request: Request,
+    benchmark_provider: str = Form(default="librispeech"),
+    source_keys: list[str] = Form(default=[]),
+    per_source: int = Form(default=2),
+    limit: int = Form(default=0),
+    providers: list[str] = Form(default=[]),
+    normalization: str | None = Form(default=None),
+    settings: Settings = Depends(get_config),
+    pool=Depends(get_worker_pool),
+) -> HTMLResponse:
+    def error(message: str, status_code: int = 400) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"message": message},
+            status_code=status_code,
+        )
+
+    benchmark = BENCHMARK_PROVIDERS_BY_KEY.get(benchmark_provider)
+    if benchmark is None:
+        known = ", ".join(provider.key for provider in BENCHMARK_PROVIDERS)
+        return error(
+            f"Unknown benchmark provider {benchmark_provider!r} "
+            f"(known: {known or 'none'})."
+        )
+
+    selected_sources = source_keys or list(benchmark.source_keys)
+    invalid_sources = [
+        key for key in selected_sources if key not in benchmark.source_keys
+    ]
+    if invalid_sources:
+        return error(
+            f"Source(s) {', '.join(invalid_sources)} are not part of "
+            f"{benchmark.name}."
+        )
+
+    if not providers:
+        return error("Select at least one model provider.")
+    unknown = [name for name in providers if name not in settings.providers]
+    if unknown:
+        return error(f"Unknown model provider(s): {', '.join(unknown)}.")
+
+    if not 1 <= per_source <= 20:
+        return error("Clips per subset must be between 1 and 20.")
+    if limit < 0:
+        return error("Clip limit cannot be negative.")
+
+    try:
+        policy = NormalizationPolicy(normalization or DEFAULT_POLICY.value)
+    except ValueError:
+        return error(f"Unknown normalization policy: {normalization}.")
+
+    output_dir = _benchmark_output_dir(settings, benchmark.key)
+    report = fetch_set(
+        selected_sources,
+        output_dir,
+        per_source=per_source,
+        progress=None,
+    )
+    if not report.clips:
+        detail = " ".join(report.failures) or "No usable clips were fetched."
+        return error(f"{benchmark.name} could not be prepared: {detail}", 502)
+
+    clips = report.clips[:limit] if limit else report.clips
+    manifest = write_manifest(report.clips, output_dir / "manifest.jsonl")
+
+    warm = pool.warm(providers)
+    warm_failures = {
+        name: status for name, status in warm.items() if status != "ready"
+    }
+    rows = evaluate(
+        settings,
+        pool,
+        clips,
+        EvaluationOptions(providers=providers, policy=policy),
+        progress=None,
+    )
+    summaries = summarise_all(rows, providers)
+
+    payload = build_benchmark_payload(
+        benchmark_key=benchmark.key,
+        benchmark_name=benchmark.name,
+        source_keys=selected_sources,
+        providers=providers,
+        normalization=policy.value,
+        summaries=summaries,
+        rows=rows,
+        clips=clips,
+        manifest=manifest,
+        fetched_clips=len(report.clips),
+        fetch_failures=report.failures,
+        warm_failures=warm_failures,
+    )
+    # Written before rendering: a result the page shows must exist on disk, so a
+    # closed tab cannot lose it.
+    stored = save_benchmark_run(output_dir, payload)
+
+    return templates.TemplateResponse(
+        request,
+        "benchmark_results.html",
+        _benchmark_context(payload, stored),
+    )
+
+
+@router.get("/benchmarks/runs", response_class=HTMLResponse)
+def benchmark_runs(
+    request: Request,
+    settings: Settings = Depends(get_config),
+) -> HTMLResponse:
+    """Saved runs across every benchmark provider, newest first."""
+    entries = []
+    for benchmark in BENCHMARK_PROVIDERS:
+        directory = _benchmark_output_dir(settings, benchmark.key)
+        for stored in list_benchmark_runs(directory, limit=20):
+            entries.append((stored.created_at, stored))
+    entries.sort(key=lambda item: item[0], reverse=True)
+
+    return templates.TemplateResponse(
+        request,
+        "_benchmark_runs.html",
+        {"runs": [stored for _, stored in entries[:20]]},
+    )
+
+
+@router.get("/benchmarks/runs/{benchmark_key}/{run_id}", response_class=HTMLResponse)
+def benchmark_run(
+    request: Request,
+    benchmark_key: str,
+    run_id: str,
+    settings: Settings = Depends(get_config),
+) -> HTMLResponse:
+    benchmark = BENCHMARK_PROVIDERS_BY_KEY.get(benchmark_key)
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail=f"no benchmark {benchmark_key!r}")
+
+    payload = load_benchmark_run(_benchmark_output_dir(settings, benchmark_key), run_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"no stored run {run_id!r}")
+
+    stored = describe_benchmark_run(
+        payload, _benchmark_output_dir(settings, benchmark_key) / "runs" / f"{run_id}.json"
+    )
+    return templates.TemplateResponse(
+        request,
+        "benchmark_run.html",
+        _benchmark_context(payload, stored),
+    )
+
+
+@router.get("/benchmarks/runs/{benchmark_key}/{run_id}/export", response_model=None)
+def benchmark_run_export(
+    benchmark_key: str,
+    run_id: str,
+    format: str = "json",
+    settings: Settings = Depends(get_config),
+) -> JSONResponse | PlainTextResponse:
+    """The stored run, exactly as written, in either format."""
+    benchmark = BENCHMARK_PROVIDERS_BY_KEY.get(benchmark_key)
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail=f"no benchmark {benchmark_key!r}")
+
+    payload = load_benchmark_run(_benchmark_output_dir(settings, benchmark_key), run_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"no stored run {run_id!r}")
+
+    if format == "json":
+        return JSONResponse(payload)
+    if format != "csv":
+        raise HTTPException(status_code=400, detail="format must be json or csv")
+
+    rows = [ClipResult(**clip) for clip in payload.get("clips") or []]
+    return PlainTextResponse(
+        to_csv(rows),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{benchmark_key}-{run_id}.csv"'
         },
     )
 

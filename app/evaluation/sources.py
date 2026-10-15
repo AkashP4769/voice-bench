@@ -51,6 +51,21 @@ class Source:
     offsets: tuple[int, ...] = (0,)
 
 
+@dataclass(frozen=True)
+class BenchmarkProvider:
+    """A named benchmark dataset composed of one or more source configs.
+
+    Keeping this separate from :class:`Source` lets the UI offer a stable
+    benchmark choice while individual configs remain independently selectable.
+    New public datasets can be added here without changing the benchmark page.
+    """
+
+    key: str
+    name: str
+    source_keys: tuple[str, ...]
+    note: str
+
+
 #: Ordered so the canonical English material comes first.
 CATALOG: tuple[Source, ...] = (
     Source(
@@ -136,6 +151,20 @@ CATALOG: tuple[Source, ...] = (
 )
 
 CATALOG_BY_KEY = {source.key: source for source in CATALOG}
+
+#: Dataset providers exposed by the automated benchmark page.
+BENCHMARK_PROVIDERS: tuple[BenchmarkProvider, ...] = (
+    BenchmarkProvider(
+        key="librispeech",
+        name="LibriSpeech",
+        source_keys=("librispeech-clean", "librispeech-other"),
+        note="English read speech with clean and harder test subsets.",
+    ),
+)
+
+BENCHMARK_PROVIDERS_BY_KEY = {
+    provider.key: provider for provider in BENCHMARK_PROVIDERS
+}
 
 #: A small default set: two English sources plus every Whistle language.
 DEFAULT_SOURCES: tuple[str, ...] = (

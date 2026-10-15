@@ -15,8 +15,11 @@ from app.evaluation.report import (
 )
 from app.evaluation.run import EvaluationOptions, evaluate
 from app.evaluation.sources import (
+    BENCHMARK_PROVIDERS,
+    BENCHMARK_PROVIDERS_BY_KEY,
     CATALOG,
     CATALOG_BY_KEY,
+    BenchmarkProvider,
     DEFAULT_SOURCES,
     Clip,
     FetchReport,
@@ -26,10 +29,21 @@ from app.evaluation.sources import (
     read_manifest,
     write_manifest,
 )
+from app.evaluation.store import (
+    StoredBenchmarkRun,
+    build_benchmark_payload,
+    describe_benchmark_run,
+    list_benchmark_runs,
+    load_benchmark_run,
+    save_benchmark_run,
+)
 
 __all__ = [
+    "BENCHMARK_PROVIDERS",
+    "BENCHMARK_PROVIDERS_BY_KEY",
     "CATALOG",
     "CATALOG_BY_KEY",
+    "BenchmarkProvider",
     "DEFAULT_SOURCES",
     "ERROR",
     "OK",
@@ -40,12 +54,18 @@ __all__ = [
     "FetchReport",
     "ProviderSummary",
     "Source",
+    "StoredBenchmarkRun",
+    "build_benchmark_payload",
+    "describe_benchmark_run",
     "evaluate",
     "fetch_set",
+    "list_benchmark_runs",
+    "load_benchmark_run",
     "probe_source",
     "read_manifest",
     "render_language_table",
     "render_table",
+    "save_benchmark_run",
     "summarise",
     "summarise_all",
     "to_csv",
