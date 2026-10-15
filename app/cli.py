@@ -216,6 +216,153 @@ def _write_csv(run: dict, path: Path) -> None:
             )
 
 
+def cmd_eval_sources(_args: argparse.Namespace) -> int:
+    """List the built-in evaluation sources."""
+    from app.evaluation import CATALOG
+
+    print(f"{'key':<20} {'lang':<5} {'repo':<38} split")
+    print("-" * 88)
+    for source in CATALOG:
+        print(
+            f"{source.key:<20} {source.language:<5} {source.repo:<38} "
+            f"{source.config}/{source.split}"
+        )
+        print(f"{'':<20} {source.note}")
+    print()
+    print("Fetch a small set with:  bench fetch --out data/benchmark")
+    return 0
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    from app.evaluation import DEFAULT_SOURCES, fetch_set, write_manifest
+
+    keys = _split(args.sources) or list(DEFAULT_SOURCES)
+    out = Path(args.out)
+    print(f"fetching {args.per_source} clip(s) from {len(keys)} source(s) into {out}")
+    print("only the clips requested are downloaded; the corpora are not\n")
+
+    report = fetch_set(keys, out, per_source=args.per_source, progress=print)
+
+    if report.clips:
+        manifest = write_manifest(report.clips, out / "manifest.jsonl")
+        total = sum(clip.duration_s or 0.0 for clip in report.clips)
+        print(f"\nwrote {manifest}")
+        print(f"{len(report.clips)} clips, {total:.1f}s of audio total")
+        languages = sorted({clip.language for clip in report.clips})
+        print(f"languages: {', '.join(languages)}")
+    else:
+        print("\nno clips were fetched", file=sys.stderr)
+
+    if report.failures:
+        print("\nfailures:", file=sys.stderr)
+        for failure in report.failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    from app.evaluation import (
+        ERROR,
+        EvaluationOptions,
+        evaluate,
+        read_manifest,
+        render_language_table,
+        render_table,
+        summarise_all,
+        to_csv,
+        to_json,
+    )
+
+    settings = get_settings()
+    manifest = Path(args.manifest)
+    if not manifest.exists():
+        print(
+            f"manifest not found at {manifest}. Fetch a set first: "
+            "bench fetch --out data/benchmark",
+            file=sys.stderr,
+        )
+        return 2
+
+    clips = read_manifest(manifest)
+    if args.limit:
+        clips = clips[: args.limit]
+    if not clips:
+        print("the manifest contains no clips", file=sys.stderr)
+        return 2
+
+    names = _split(args.providers)
+    if not names:
+        names = list(settings.providers)
+    unknown = [name for name in names if name not in settings.providers]
+    if unknown:
+        known = ", ".join(sorted(settings.providers)) or "none"
+        print(f"unknown provider(s): {', '.join(unknown)} (known: {known})", file=sys.stderr)
+        return 2
+
+    policy = NormalizationPolicy(args.normalization)
+    print(
+        f"evaluating {len(clips)} clip(s) with {', '.join(names)} "
+        f"(normalization: {policy.value})\n"
+    )
+
+    pool = get_pool(settings)
+    print(f"loading models: {', '.join(names)}")
+    outcomes = pool.warm(names)
+    for name, outcome in outcomes.items():
+        if outcome != "ready":
+            print(f"  {name}: FAILED. {outcome}", file=sys.stderr)
+
+    rows = evaluate(
+        settings,
+        pool,
+        clips,
+        EvaluationOptions(
+            providers=names,
+            policy=policy,
+            force_unsupported=args.force_unsupported,
+        ),
+        progress=lambda message: print("  " + message),
+    )
+
+    summaries = summarise_all(rows, names)
+
+    print()
+    print(render_table(summaries))
+    language_table = render_language_table(summaries)
+    if language_table:
+        print()
+        print(language_table)
+
+    failures = [row for row in rows if row.status == ERROR]
+    if failures:
+        print(f"\n{len(failures)} clip/provider pair(s) failed:", file=sys.stderr)
+        for row in failures[:10]:
+            print(f"  - {row.provider} / {row.clip_id}: {row.note}", file=sys.stderr)
+
+    if args.json_out:
+        payload = to_json(
+            summaries,
+            rows,
+            metadata={
+                "manifest": str(manifest),
+                "clips": len(clips),
+                "providers": names,
+                "normalization": policy.value,
+            },
+        )
+        Path(args.json_out).write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"\nwrote {args.json_out}")
+    if args.csv_out:
+        Path(args.csv_out).write_text(to_csv(rows), encoding="utf-8")
+        print(f"wrote {args.csv_out}")
+
+    pool.shutdown()
+    return 0
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     settings = get_settings()
     repository = Repository(settings.db_path)
@@ -269,6 +416,44 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("env", help="print machine and package facts").set_defaults(func=cmd_env)
 
+    sub.add_parser(
+        "sources", help="list built-in evaluation sources with ground truth"
+    ).set_defaults(func=cmd_eval_sources)
+
+    fetch = sub.add_parser(
+        "fetch", help="download a small ground-truthed evaluation set"
+    )
+    fetch.add_argument(
+        "--sources",
+        default="",
+        help="comma-separated source keys; default is a small varied set",
+    )
+    fetch.add_argument("--per-source", type=int, default=2, help="clips per source")
+    fetch.add_argument("--out", default="data/benchmark", help="output directory")
+    fetch.set_defaults(func=cmd_fetch)
+
+    evaluate_parser = sub.add_parser(
+        "evaluate", help="score providers against a manifest and report word error rate"
+    )
+    evaluate_parser.add_argument(
+        "--manifest", default="data/benchmark/manifest.jsonl"
+    )
+    evaluate_parser.add_argument("--providers", default="", help="default: all configured")
+    evaluate_parser.add_argument("--limit", type=int, default=0, help="cap clips used")
+    evaluate_parser.add_argument(
+        "--normalization",
+        default=DEFAULT_POLICY.value,
+        choices=[item.value for item in NormalizationPolicy],
+    )
+    evaluate_parser.add_argument(
+        "--force-unsupported",
+        action="store_true",
+        help="also run providers on languages they do not declare support for",
+    )
+    evaluate_parser.add_argument("--json-out", default="")
+    evaluate_parser.add_argument("--csv-out", default="")
+    evaluate_parser.set_defaults(func=cmd_evaluate)
+
     run = sub.add_parser("run", help="benchmark one audio file")
     run.add_argument("audio", help="path to an audio file")
     run.add_argument("--providers", required=True, help="comma-separated provider names")
@@ -306,6 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Multilingual transcripts and paths land on stdout, and a Windows console
+    # defaults to a legacy codepage that raises on characters like Polish "ś".
+    # Replace rather than crash: a mangled glyph must not abort a fetch.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

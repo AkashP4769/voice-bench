@@ -4,6 +4,12 @@ The edit-distance implementation counts substitutions, insertions and deletions
 rather than only the total, because the breakdown is what tells you how a model
 failed: a model that drops words behaves very differently from one that
 hallucinates them.
+
+Both rates are computed on text normalized by the *same* policy, so the number
+the UI reports and the number the aggregate reports agree. Normalizing only the
+word comparison and scoring characters on raw text is a trap: corpora like
+LibriSpeech use capitals, and a correctly-cased hypothesis would then score 100%
+character error against a perfect transcript.
 """
 
 from __future__ import annotations
@@ -26,7 +32,11 @@ class EditCounts:
 
 @dataclass(frozen=True)
 class ScoreResult:
-    """Scores for one hypothesis against one reference."""
+    """Scores for one hypothesis against one reference.
+
+    ``unit_error_rate`` is word error rate and ``char_error_rate`` is character
+    error rate; both follow the policy used to normalize the text.
+    """
 
     reference_units: int
     hypothesis_units: int
@@ -109,10 +119,13 @@ def score(
     hyp_words = hyp_text.split() if hyp_text else []
     word_counts = edit_counts(ref_words, hyp_words)
 
-    raw_reference = normalize(reference, NormalizationPolicy.NONE)
-    raw_hypothesis = normalize(hypothesis, NormalizationPolicy.NONE)
-    ref_chars = [c for c in raw_reference if not c.isspace()]
-    hyp_chars = [c for c in raw_hypothesis if not c.isspace()]
+    # Character error rate uses the SAME normalization as word error rate, with
+    # whitespace removed. Scoring characters on un-normalized text is a trap:
+    # LibriSpeech transcribes in capitals, so an all-caps reference against a
+    # correctly-cased hypothesis scored 100% character error on a perfect
+    # transcript, because every single character differed by case alone.
+    ref_chars = [char for char in ref_text if not char.isspace()]
+    hyp_chars = [char for char in hyp_text if not char.isspace()]
     char_counts = edit_counts(ref_chars, hyp_chars)
 
     wer = word_counts.errors / len(ref_words) if ref_words else None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.scoring.metrics import edit_counts, score
+from app.scoring.normalize import NormalizationPolicy
 
 
 def test_identical_text_scores_zero():
@@ -51,8 +52,6 @@ def test_normalization_is_applied_before_scoring():
 
 
 def test_none_policy_keeps_differences():
-    from app.scoring.normalize import NormalizationPolicy
-
     result = score(
         "The quick, brown fox.",
         "the quick brown fox",
@@ -66,6 +65,38 @@ def test_character_error_rate_counts_characters():
     result = score("abcd", "abce")
     assert result.char_errors == 1
     assert result.char_error_rate == 0.25
+
+
+def test_an_all_caps_reference_does_not_produce_a_perfect_cer_against_perfect_text():
+    """LibriSpeech transcribes in capitals; this must not read as 100% error.
+
+    Regression: CER used to be scored on un-normalized text, so a correctly-cased
+    hypothesis against an all-caps reference differed in every character.
+    """
+    result = score(
+        "CONCORD RETURNED TO ITS PLACE",
+        "Concord returned to its place.",
+    )
+    assert result.unit_error_rate == 0.0
+    assert result.char_error_rate == 0.0
+
+
+def test_cer_follows_the_chosen_policy():
+    reference = "THE QUICK BROWN FOX"
+    hypothesis = "the quick brown fox"
+
+    # Under the default policy both texts normalize to the same thing.
+    assert score(reference, hypothesis).char_error_rate == 0.0
+    # Under no normalization they differ, which is the strict view.
+    strict = score(reference, hypothesis, NormalizationPolicy.NONE)
+    assert strict.char_error_rate is not None
+    assert strict.char_error_rate > 0
+
+
+def test_cer_ignores_whitespace_but_still_counts_case_and_content():
+    result = score("abc def", "abcdef")
+    # Whitespace is excluded from the character comparison.
+    assert result.char_error_rate == 0.0
 
 
 def test_edit_counts_reference_and_hypothesis_swapped():
